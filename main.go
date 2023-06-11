@@ -11,7 +11,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"time"
 
 	"image"
 	_ "image/jpeg"
@@ -31,12 +30,14 @@ func main() {
 		log.Fatal(err)
 	}
 }
+
+var pdfConf = pdfmodel.NewDefaultConfiguration()
+
 func Main() error {
 	flag.Parse()
-	scanner := grcode.NewScanner()
-	defer scanner.Close()
+	p := NewProcessor()
+	defer p.Close()
 
-	conf := pdfmodel.NewDefaultConfiguration()
 	for _, fn := range flag.Args() {
 		fh := os.Stdin
 		if !(fn == "" || fn == "-") {
@@ -50,40 +51,70 @@ func Main() error {
 		if err != nil {
 			return err
 		}
-		var a [16]byte
-		if _, err := io.ReadAtLeast(
-			io.NewSectionReader(sr, 0, sr.Size()), a[:], 8,
-		); err != nil {
-			return fmt.Errorf("read from %q: %w", fh.Name(), err)
+		results, err := p.Process(sr)
+		if err != nil {
+			return err
 		}
-		if bytes.Equal(a[:7], []byte("%PDF-1.")) {
-			pdfCtx, err := pdfcpu.Read(sr, conf)
-			if err != nil {
-				return err
-			}
-			images, err := ExtractPageImages(pdfCtx)
-			if err != nil {
-				return err
-			}
-			for _, img := range images {
-				results, err := processImage(scanner, img)
-				if err != nil {
-					return err
-				}
-				log.Println(results)
-			}
-		} else {
-			results, err := processImage(scanner, sr)
-			if err != nil {
-				return err
-			}
-			log.Println(results)
-		}
+		log.Println(results)
 	}
 	return nil
 }
 
-func processImage(scanner *grcode.Scanner, r io.Reader) ([]string, error) {
+type Processor struct {
+	scanner *grcode.Scanner
+	pdfConf *pdfmodel.Configuration
+}
+
+func NewProcessor() Processor {
+	return Processor{scanner: grcode.NewScanner(), pdfConf: pdfmodel.NewDefaultConfiguration()}
+}
+func (p Processor) Close() error {
+	if p.scanner == nil {
+		return nil
+	}
+	p.scanner.Close()
+	return nil
+}
+
+func (p Processor) Process(rs io.ReadSeeker) (map[int][]string, error) {
+	var a [16]byte
+	if _, err := io.ReadAtLeast(rs, a[:], 8); err != nil {
+		return nil, err
+	}
+	if _, err := rs.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
+	if bytes.Equal(a[:7], []byte("%PDF-1.")) {
+		return p.ProcessPDF(rs)
+	}
+	codes, err := p.ProcessImage(rs)
+	if err != nil {
+		return nil, err
+	}
+	return map[int][]string{1: codes}, nil
+}
+
+func (p Processor) ProcessPDF(rs io.ReadSeeker) (map[int][]string, error) {
+	pdfCtx, err := pdfcpu.Read(rs, pdfConf)
+	if err != nil {
+		return nil, err
+	}
+	images, err := ExtractPageImages(pdfCtx)
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[int][]string, len(images))
+	for _, img := range images {
+		results, err := p.ProcessImage(img)
+		if err != nil {
+			return m, err
+		}
+		m[img.PageNr] = append(m[img.PageNr], results...)
+	}
+	return m, nil
+}
+
+func (p Processor) ProcessImage(r io.Reader) ([]string, error) {
 	/*
 			scanner := NewScanner()
 		defer scanner.Close()
@@ -97,18 +128,14 @@ func processImage(scanner *grcode.Scanner, r io.Reader) ([]string, error) {
 		}
 		return results, nil
 	*/
-	img, format, err := image.Decode(r)
+	img, _, err := image.Decode(r)
 	if err != nil {
 		return nil, err
 	}
-	log.Println(format)
 	zImg := grcode.NewZbarImage(img)
 	defer zImg.Close()
 	var n int
-	start := time.Now()
-	n, err = scanner.Scan(zImg)
-	dur := time.Since(start)
-	log.Printf("scan %v: %+v (%s)", format, err, dur)
+	n, err = p.scanner.Scan(zImg)
 	if err != nil {
 		return nil, err
 	} else if n == 0 {
@@ -132,7 +159,6 @@ func ExtractPageImages(pdfCtx *pdfmodel.Context) ([]pdfmodel.Image, error) {
 	var images []pdfmodel.Image
 	for pageNr := 1; pageNr <= pdfCtx.XRefTable.PageCount; pageNr++ {
 		for _, objNr := range pdfcpu.ImageObjNrs(pdfCtx, pageNr) {
-			log.Println(objNr)
 			imageObj := pdfCtx.Optimize.ImageObjects[objNr]
 			img, err := pdfcpu.ExtractImage(pdfCtx, imageObj.ImageDict, false, imageObj.ResourceNames[0], objNr, false)
 			if err != nil {
@@ -141,7 +167,6 @@ func ExtractPageImages(pdfCtx *pdfmodel.Context) ([]pdfmodel.Image, error) {
 			if img != nil {
 				img.PageNr = pageNr
 				images = append(images, *img)
-				fmt.Printf("img: %v\n", img)
 			}
 		}
 	}
