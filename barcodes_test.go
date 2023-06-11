@@ -30,6 +30,7 @@ func TestPDF(t *testing.T) {
 		nm, _ := strings.CutPrefix(row[1], "karscn/")
 		want[nm] = row[0]
 	}
+	cfh.Close()
 
 	zfh, err := os.Open(filepath.Join("testdata", "karscn.zip"))
 	if err != nil {
@@ -45,6 +46,7 @@ func TestPDF(t *testing.T) {
 
 	processors := make(chan Processor, runtime.GOMAXPROCS(-1))
 	defer func() {
+		close(processors)
 		for p := range processors {
 			p.Close()
 		}
