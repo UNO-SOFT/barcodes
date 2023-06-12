@@ -20,7 +20,7 @@ import (
 	"sync"
 	"syscall"
 
-	pnm "github.com/jbuchbinder/gopnm"
+	pnm "github.com/UNO-SOFT/gopnm"
 	"image"
 	_ "image/jpeg"
 	png "image/png"

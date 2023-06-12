@@ -1,3 +1,5 @@
+github.com/UNO-SOFT/gopnm v0.0.2 h1:hrEhNp0CNkdqKdmlKjOkhfGsgWGDGNRLqWW14VvLSf4=
+github.com/UNO-SOFT/gopnm v0.0.2/go.mod h1:6RbeDKjDLDg457qcLSvoYBw74vwlsTUmWPOAK5zDSvs=
 github.com/UNO-SOFT/grcode v0.0.2 h1:A2v++NGcbTkkdwnMaQLBBnYlSFPqCmkgkz81wbb4U2g=
 github.com/UNO-SOFT/grcode v0.0.2/go.mod h1:/1gZWSNpAZCD8ZxWz2+EJVoffv6oghx/AyG1A+bvR54=
 github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ33E=

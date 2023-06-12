@@ -9,6 +9,7 @@ require (
 )
 
 require (
+	github.com/UNO-SOFT/gopnm v0.0.2 // indirect
 	github.com/dgryski/go-linebreak v0.0.0-20180812204043-d8f37254e7d3 // indirect
 	github.com/hhrutter/lzw v1.0.0 // indirect
 	github.com/hhrutter/tiff v1.0.0 // indirect
