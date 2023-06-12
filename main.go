@@ -6,15 +6,24 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"io"
 	"log"
 	"os"
+	"os/exec"
+	"os/signal"
+	"strings"
+	"sync"
+	"syscall"
 
+	pnm "github.com/jbuchbinder/gopnm"
 	"image"
 	_ "image/jpeg"
-	_ "image/png"
+	png "image/png"
 
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
 	pdfmodel "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
@@ -35,6 +44,8 @@ var pdfConf = pdfmodel.NewDefaultConfiguration()
 
 func Main() error {
 	flag.Parse()
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
 	p := NewProcessor()
 	defer p.Close()
 
@@ -51,7 +62,7 @@ func Main() error {
 		if err != nil {
 			return err
 		}
-		results, err := p.Process(sr)
+		results, err := p.Process(ctx, sr)
 		if err != nil {
 			return err
 		}
@@ -76,7 +87,7 @@ func (p Processor) Close() error {
 	return nil
 }
 
-func (p Processor) Process(rs io.ReadSeeker) (map[int][]string, error) {
+func (p Processor) Process(ctx context.Context, rs io.ReadSeeker) (map[int][]string, error) {
 	var a [16]byte
 	if _, err := io.ReadAtLeast(rs, a[:], 8); err != nil {
 		return nil, err
@@ -85,16 +96,16 @@ func (p Processor) Process(rs io.ReadSeeker) (map[int][]string, error) {
 		return nil, err
 	}
 	if bytes.Equal(a[:7], []byte("%PDF-1.")) {
-		return p.ProcessPDF(rs)
+		return p.ProcessPDF(ctx, rs)
 	}
-	codes, err := p.ProcessImage(rs)
+	codes, err := p.ProcessImage(ctx, rs)
 	if err != nil {
 		return nil, err
 	}
 	return map[int][]string{1: codes}, nil
 }
 
-func (p Processor) ProcessPDF(rs io.ReadSeeker) (map[int][]string, error) {
+func (p Processor) ProcessPDF(ctx context.Context, rs io.ReadSeeker) (map[int][]string, error) {
 	pdfCtx, err := pdfcpu.Read(rs, pdfConf)
 	if err != nil {
 		return nil, err
@@ -105,7 +116,7 @@ func (p Processor) ProcessPDF(rs io.ReadSeeker) (map[int][]string, error) {
 	}
 	m := make(map[int][]string, len(images))
 	for _, img := range images {
-		results, err := p.ProcessImage(img)
+		results, err := p.ProcessImage(ctx, img)
 		if err != nil {
 			return m, err
 		}
@@ -114,39 +125,132 @@ func (p Processor) ProcessPDF(rs io.ReadSeeker) (map[int][]string, error) {
 	return m, nil
 }
 
-func (p Processor) ProcessImage(r io.Reader) ([]string, error) {
-	/*
-			scanner := NewScanner()
-		defer scanner.Close()
-		scanner.SetConfig(0, C.ZBAR_CFG_ENABLE, 1)
-		zImg := NewZbarImage(image)
-		defer zImg.Close()
-		scanner.Scan(zImg)
-		symbol := zImg.GetSymbol()
-		for ; symbol != nil; symbol = symbol.Next() {
-			results = append(results, symbol.Data())
-		}
-		return results, nil
-	*/
-	img, _, err := image.Decode(r)
+func (p Processor) ProcessImage(ctx context.Context, r io.Reader) ([]string, error) {
+	hsh := sha256.New()
+	img, _, err := image.Decode(io.TeeReader(r, hsh))
 	if err != nil {
 		return nil, err
 	}
+	hshS := base64.URLEncoding.EncodeToString(hsh.Sum(nil))
+	//log.Println("hash:", hshS, "bounds:", img.Bounds(), "boxes:", boxes(img.Bounds()))
+	var results []string
+
+	if results, err = p.scanImage(results, img); err != nil {
+		log.Println(err)
+	} else if len(results) != 0 {
+		return results, nil
+	}
+	if img, err = Unpaper(ctx, img); err != nil {
+		log.Printf("unpaper %s: %+v", hshS, err)
+	}
+	if true {
+		if fh, err := os.Create("/tmp/x-" + hshS + "-unpaper.png"); err == nil {
+			png.Encode(fh, img)
+		}
+	}
+	for _, box := range boxes(img.Bounds()) {
+		if err := func() error {
+			sub := img.(interface {
+				SubImage(image.Rectangle) image.Image
+			}).SubImage(box)
+			var err error
+			results, err = p.scanImage(results, sub)
+			return err
+		}(); err != nil || len(results) != 0 {
+			return results, err
+		}
+	}
+	return results, nil
+}
+
+// scanImage scans the barcode from one code.
+func (p Processor) scanImage(results []string, img image.Image) ([]string, error) {
 	zImg := grcode.NewZbarImage(img)
 	defer zImg.Close()
-	var n int
-	n, err = p.scanner.Scan(zImg)
+	n, err := p.scanner.Scan(zImg)
 	if err != nil {
-		return nil, err
+		return results, err
 	} else if n == 0 {
-		return nil, nil
+		return results, nil
 	}
-	results := make([]string, 0, n)
+	results = make([]string, 0, n)
 	symbol := zImg.GetSymbol()
 	for ; symbol != nil; symbol = symbol.Next() {
 		results = append(results, symbol.Data())
 	}
 	return results, nil
+}
+
+var unpaperExecOnce sync.Once
+var unpaperExec string
+
+// Unpaper calls unpaper on the image.
+func Unpaper(ctx context.Context, img image.Image) (image.Image, error) {
+	unpaperExecOnce.Do(func() {
+		var err error
+		if unpaperExec, err = exec.LookPath("unpaper"); err != nil {
+			log.Println(err)
+		}
+	})
+	if unpaperExec == "" {
+		return img, nil
+	}
+	in, err := os.CreateTemp("", "barcode-in-*.pgm")
+	if err != nil {
+		return img, err
+	}
+	defer func() { in.Close(); os.Remove(in.Name()) }()
+	if err = pnm.Encode(in, img, pnm.PGM); err != nil {
+		return img, err
+	}
+
+	outBase := strings.TrimSuffix(in.Name(), ".pgm") + "-out-"
+	outMask, outFn := outBase+"%03d.pbm", outBase+"001.pbm"
+	defer os.Remove(outFn)
+	var errBuf bytes.Buffer
+	cmd := exec.CommandContext(ctx, unpaperExec, "-t", "pbm", "-b", "0.5", in.Name(), outMask)
+	log.Println(cmd.Args)
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		return img, fmt.Errorf("%s: %w", errBuf.String(), err)
+	}
+	//log.Println(errBuf.String())
+	out, err := os.Open(outFn)
+	if err != nil {
+		return img, err
+	}
+	defer out.Close()
+	return pnm.Decode(out)
+}
+
+func boxes(bounds image.Rectangle) []image.Rectangle {
+	bb := make([]image.Rectangle, 1, 16)
+	bb[0] = bounds
+	width, height := bounds.Dx(), bounds.Dy()
+	for w, h := width/2, height/2; w >= 200 && h >= 200; w, h = w/2, h/2 {
+		for y := 0; y+h <= height; y += h {
+			for x := 0; x+w <= width; x += w {
+				bb = append(bb, image.Rect(
+					max(0, bounds.Min.X+x-w/4), max(0, bounds.Min.Y+y-h/4),
+					min(bounds.Max.X, bounds.Min.X+x+w+w/4), min(bounds.Max.Y, bounds.Min.Y+y+h+h/4),
+				))
+			}
+		}
+	}
+	return bb
+}
+
+func max(a, b int) int {
+	if a < b {
+		return b
+	}
+	return a
+}
+func min(a, b int) int {
+	if a > b {
+		return b
+	}
+	return a
 }
 
 func ExtractPageImages(pdfCtx *pdfmodel.Context) ([]pdfmodel.Image, error) {

@@ -6,18 +6,23 @@ package main
 
 import (
 	"archive/zip"
+	"context"
 	"encoding/csv"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/tgulacsi/go/iohlp"
 	"golang.org/x/sync/errgroup"
 )
 
 func TestPDF(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
 	cfh, err := os.Open(filepath.Join("testdata", "karscn.csv"))
 	if err != nil {
 		t.Skip(err)
@@ -94,7 +99,7 @@ func TestPDF(t *testing.T) {
 							p.Close()
 						}
 					}()
-					codes, err := p.Process(sr)
+					codes, err := p.Process(ctx, sr)
 					if err != nil {
 						t.Fatal(err)
 					}
