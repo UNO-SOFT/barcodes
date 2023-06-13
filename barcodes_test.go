@@ -19,6 +19,21 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+func TestIsEmpty(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	testRunZip(ctx, t, func(ctx context.Context, t *testing.T, p Processor, f *zip.File) {
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rc.Close()
+
+	})
+
+}
+
 func TestPDF(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
@@ -37,6 +52,47 @@ func TestPDF(t *testing.T) {
 	}
 	cfh.Close()
 
+	testRunZip(ctx, t, func(ctx context.Context, t *testing.T, p Processor, f *zip.File) {
+		rc, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer rc.Close()
+
+		w := want[f.Name[:len(f.Name)-len(filepath.Ext(f.Name))]]
+		sr, err := iohlp.MakeSectionReader(rc, 1<<20)
+		if err != nil {
+			t.Fatal(err)
+		}
+		codes, err := p.GetBarcodes(ctx, sr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("%q codes: %v", t.Name(), codes)
+		var n int
+		var found bool
+		for i, cs := range codes {
+			if len(cs) == 0 {
+				t.Logf("%q page %d is empty", t.Name(), i)
+				continue
+			}
+			for _, c := range cs {
+				if !found {
+					found = c == w
+				}
+			}
+			n += len(cs)
+		}
+		if n == 0 {
+			t.Errorf("%q: no codes", t.Name())
+		}
+		if w != "" && !found {
+			t.Fatalf("%q code %q not found", t.Name(), w)
+		}
+	})
+}
+
+func testRunZip(ctx context.Context, t *testing.T, fun func(context.Context, *testing.T, Processor, *zip.File)) {
 	zfh, err := os.Open(filepath.Join("testdata", "karscn.zip"))
 	if err != nil {
 		t.Skip(err)
@@ -63,6 +119,19 @@ func TestPDF(t *testing.T) {
 	for remainder := 0; remainder < conc; remainder++ {
 		remainder := remainder
 		grp.Go(func() error {
+			var p Processor
+			select {
+			case p = <-processors:
+			default:
+				p = NewProcessor()
+			}
+			defer func() {
+				select {
+				case processors <- p:
+				default:
+					p.Close()
+				}
+			}()
 		Loop:
 			for i, f := range zr.File {
 				if i%conc != remainder {
@@ -75,55 +144,7 @@ func TestPDF(t *testing.T) {
 					continue Loop
 				}
 				t.Run(f.Name, func(t *testing.T) {
-					rc, err := f.Open()
-					if err != nil {
-						t.Fatal(err)
-					}
-					defer rc.Close()
-
-					w := want[f.Name[:len(f.Name)-len(ext)]]
-					sr, err := iohlp.MakeSectionReader(rc, 1<<20)
-					if err != nil {
-						t.Fatal(err)
-					}
-					var p Processor
-					select {
-					case p = <-processors:
-					default:
-						p = NewProcessor()
-					}
-					defer func() {
-						select {
-						case processors <- p:
-						default:
-							p.Close()
-						}
-					}()
-					codes, err := p.Process(ctx, sr)
-					if err != nil {
-						t.Fatal(err)
-					}
-					t.Logf("%q codes: %v", t.Name(), codes)
-					var n int
-					var found bool
-					for i, cs := range codes {
-						if len(cs) == 0 {
-							t.Logf("%q page %d is empty", t.Name(), i)
-							continue
-						}
-						for _, c := range cs {
-							if !found {
-								found = c == w
-							}
-						}
-						n += len(cs)
-					}
-					if n == 0 {
-						t.Errorf("%q: no codes", t.Name())
-					}
-					if w != "" && !found {
-						t.Fatalf("%q code %q not found", t.Name(), w)
-					}
+					fun(ctx, t, p, f)
 				})
 			}
 			return nil

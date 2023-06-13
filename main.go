@@ -21,9 +21,10 @@ import (
 	"syscall"
 
 	pnm "github.com/UNO-SOFT/gopnm"
+	"golang.org/x/image/draw"
 	"image"
 	_ "image/jpeg"
-	png "image/png"
+	"image/png"
 
 	"github.com/pdfcpu/pdfcpu/pkg/pdfcpu"
 	pdfmodel "github.com/pdfcpu/pdfcpu/pkg/pdfcpu/model"
@@ -62,7 +63,7 @@ func Main() error {
 		if err != nil {
 			return err
 		}
-		results, err := p.Process(ctx, sr)
+		results, err := p.GetBarcodes(ctx, sr)
 		if err != nil {
 			return err
 		}
@@ -87,22 +88,51 @@ func (p Processor) Close() error {
 	return nil
 }
 
-func (p Processor) Process(ctx context.Context, rs io.ReadSeeker) (map[int][]string, error) {
+func (p Processor) ProcessImages(ctx context.Context, rs io.ReadSeeker, fun func(context.Context, io.Reader) error) error {
 	var a [16]byte
 	if _, err := io.ReadAtLeast(rs, a[:], 8); err != nil {
-		return nil, err
+		return err
 	}
 	if _, err := rs.Seek(0, io.SeekStart); err != nil {
-		return nil, err
+		return err
 	}
-	if bytes.Equal(a[:7], []byte("%PDF-1.")) {
-		return p.ProcessPDF(ctx, rs)
+	var images []pdfmodel.Image
+	if !bytes.Equal(a[:7], []byte("%PDF-1.")) {
+		images = append(images, pdfmodel.Image{Reader: rs, PageNr: 0})
+	} else {
+		pdfCtx, err := pdfcpu.Read(rs, pdfConf)
+		if err != nil {
+			return err
+		}
+		images, err = ExtractPageImages(pdfCtx)
+		if err != nil {
+			return err
+		}
 	}
-	codes, err := p.ProcessImage(ctx, rs)
-	if err != nil {
-		return nil, err
+
+	for _, img := range images {
+		if err := fun(ctx, img); err != nil {
+			return err
+		}
 	}
-	return map[int][]string{1: codes}, nil
+	return nil
+}
+
+func (p Processor) GetBarcodes(ctx context.Context, rs io.ReadSeeker) (map[int][]string, error) {
+	m := make(map[int][]string)
+	var idx int
+	err := p.ProcessImages(ctx, rs, func(ctx context.Context, img io.Reader) error {
+		codes, err := p.ProcessImage(ctx, img)
+		idx--
+		nr := idx
+		if pi, ok := img.(pdfmodel.Image); ok {
+			nr = pi.PageNr
+		}
+		m[nr] = append(m[nr], codes...)
+		return err
+	})
+	return m, err
+
 }
 
 func (p Processor) ProcessPDF(ctx context.Context, rs io.ReadSeeker) (map[int][]string, error) {
@@ -135,6 +165,13 @@ func (p Processor) ProcessImage(ctx context.Context, r io.Reader) ([]string, err
 	//log.Println("hash:", hshS, "bounds:", img.Bounds(), "boxes:", boxes(img.Bounds()))
 	var results []string
 
+	if IsEmpty(img) {
+		log.Println("hshS is empty")
+		fh, _ := os.Create("/tmp/" + hshS + "-empty.png")
+		png.Encode(fh, img)
+		fh.Close()
+		return nil, nil
+	}
 	if results, err = p.scanImage(results, img); err != nil {
 		log.Println(err)
 	} else if len(results) != 0 {
@@ -142,11 +179,6 @@ func (p Processor) ProcessImage(ctx context.Context, r io.Reader) ([]string, err
 	}
 	if img, err = Unpaper(ctx, img); err != nil {
 		log.Printf("unpaper %s: %+v", hshS, err)
-	}
-	if true {
-		if fh, err := os.Create("/tmp/x-" + hshS + "-unpaper.png"); err == nil {
-			png.Encode(fh, img)
-		}
 	}
 	for _, box := range boxes(img.Bounds()) {
 		if err := func() error {
@@ -275,4 +307,20 @@ func ExtractPageImages(pdfCtx *pdfmodel.Context) ([]pdfmodel.Image, error) {
 		}
 	}
 	return images, nil
+}
+
+func IsEmpty(img image.Image) bool {
+	dst := image.NewGray(image.Rect(0, 0, 16, 16))
+	draw.ApproxBiLinear.Scale(dst, dst.Bounds(), img, img.Bounds(), draw.Src, nil)
+	m := map[bool]int{true: 1, false: 0}
+	var n int
+	for _, pix := range dst.Pix {
+		n += m[pix < 128] // ~black
+	}
+	fh, _ := os.Create("/tmp/x.png")
+	png.Encode(fh, dst)
+	fh.Close()
+
+	log.Println("img:", n)
+	return n <= 8
 }
