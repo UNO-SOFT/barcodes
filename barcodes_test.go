@@ -9,8 +9,10 @@ import (
 	"context"
 	"encoding/csv"
 	"image"
+	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -24,26 +26,40 @@ func TestIsEmpty(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
+	want := map[string]map[int]bool{
+		"b779df0774805995b24cda14bd5c5674.pdf": {1: false, 2: true, 3: false},
+	}
 	testRunZip(ctx, t, func(ctx context.Context, t *testing.T, p Processor, f *zip.File) {
+		w := want[strings.TrimPrefix(t.Name(), "TestIsEmpty/")]
+		if w == nil {
+			return
+		}
+
 		rc, err := f.Open()
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer rc.Close()
 
-		sr, err := iohlp.MakeSectionReader(rc)
+		sr, err := iohlp.MakeSectionReader(rc, 1<<20)
 		if err != nil {
 			t.Fatal(err)
 		}
+		var n int
+		got := make(map[int]bool, len(want))
 		p.ProcessImages(ctx, sr, func(ctx context.Context, r io.Reader) error {
-			img, err := image.Decode(r)
+			img, _, err := image.Decode(r)
 			if err != nil {
 				return err
 			}
-			if IsEmpty(img) {
-				t.Log(r, "is empty")
-			}
+			n++
+			got[n] = IsEmpty(img)
+			return nil
 		})
+
+		if !reflect.DeepEqual(got, w) {
+			t.Errorf("%s got %v, wanted %v", t.Name(), got, w)
+		}
 	})
 
 }

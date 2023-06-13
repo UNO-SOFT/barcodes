@@ -166,7 +166,7 @@ func (p Processor) ProcessImage(ctx context.Context, r io.Reader) ([]string, err
 	var results []string
 
 	if IsEmpty(img) {
-		log.Println("hshS is empty")
+		//log.Println("hshS is empty")
 		fh, _ := os.Create("/tmp/" + hshS + "-empty.png")
 		png.Encode(fh, img)
 		fh.Close()
@@ -321,6 +321,6 @@ func IsEmpty(img image.Image) bool {
 	png.Encode(fh, dst)
 	fh.Close()
 
-	log.Println("img:", n)
+	//log.Println("img:", n)
 	return n <= 8
 }
