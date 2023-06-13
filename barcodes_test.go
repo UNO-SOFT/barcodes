@@ -8,6 +8,7 @@ import (
 	"archive/zip"
 	"context"
 	"encoding/csv"
+	"image"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -30,6 +31,19 @@ func TestIsEmpty(t *testing.T) {
 		}
 		defer rc.Close()
 
+		sr, err := iohlp.MakeSectionReader(rc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.ProcessImages(ctx, sr, func(ctx context.Context, r io.Reader) error {
+			img, err := image.Decode(r)
+			if err != nil {
+				return err
+			}
+			if IsEmpty(img) {
+				t.Log(r, "is empty")
+			}
+		})
 	})
 
 }
