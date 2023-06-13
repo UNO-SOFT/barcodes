@@ -165,7 +165,7 @@ func (p Processor) ProcessImage(ctx context.Context, r io.Reader) ([]string, err
 	//log.Println("hash:", hshS, "bounds:", img.Bounds(), "boxes:", boxes(img.Bounds()))
 	var results []string
 
-	if IsEmpty(img) {
+	if IsBlank(img) {
 		//log.Println("hshS is empty")
 		fh, _ := os.Create("/tmp/" + hshS + "-empty.png")
 		png.Encode(fh, img)
@@ -309,18 +309,18 @@ func ExtractPageImages(pdfCtx *pdfmodel.Context) ([]pdfmodel.Image, error) {
 	return images, nil
 }
 
-func IsEmpty(img image.Image) bool {
-	dst := image.NewGray(image.Rect(0, 0, 16, 16))
+func IsBlank(img image.Image) bool {
+	return Blankness(img) < 0.1
+}
+func Blankness(img image.Image) float32 {
+	dst := image.NewGray(image.Rect(0, 0, 128, 128))
 	draw.ApproxBiLinear.Scale(dst, dst.Bounds(), img, img.Bounds(), draw.Src, nil)
 	m := map[bool]int{true: 1, false: 0}
 	var n int
 	for _, pix := range dst.Pix {
-		n += m[pix < 128] // ~black
+		n += m[pix < 196] // ~black
 	}
-	fh, _ := os.Create("/tmp/x.png")
-	png.Encode(fh, dst)
-	fh.Close()
 
 	//log.Println("img:", n)
-	return n <= 8
+	return float32(n*100) / float32(len(dst.Pix))
 }

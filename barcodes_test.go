@@ -10,6 +10,7 @@ import (
 	"encoding/csv"
 	"image"
 	"io"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -22,7 +23,78 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-func TestIsEmpty(t *testing.T) {
+func TestIsBlankRate(t *testing.T) {
+	rand.Seed(int64(time.Now().Nanosecond()))
+
+	t.Run("false-positive", func(t *testing.T) {
+		t.Parallel()
+		dn := filepath.Join("testdata", "E", "n")
+		dis, err := os.ReadDir(dn)
+		if len(dis) == 0 && err != nil {
+			t.Skip(err)
+		}
+		rand.Shuffle(len(dis), func(i, j int) { dis[i], dis[j] = dis[j], dis[i] })
+		for _, di := range dis {
+			fh, err := os.Open(filepath.Join(dn, di.Name()))
+			if err != nil {
+				t.Error(err)
+				continue
+			}
+			img, _, err := image.Decode(fh)
+			fh.Close()
+			if err != nil {
+				if strings.Contains(err.Error(), "invalid format") {
+					os.Remove(fh.Name())
+					continue
+				}
+				t.Error(err)
+				continue
+			}
+			if IsBlank(img) {
+				t.Errorf("%s IsBlank(%f), bot should be not", fh.Name(), Blankness(img))
+			}
+		}
+	})
+
+	t.Run("false-negative", func(t *testing.T) {
+		t.Parallel()
+		dn := filepath.Join("testdata", "E", "e")
+		dis, err := os.ReadDir(dn)
+		if len(dis) == 0 && err != nil {
+			t.Fatal(err)
+		}
+		rand.Shuffle(len(dis), func(i, j int) { dis[i], dis[j] = dis[j], dis[i] })
+		var p, n int
+		for _, di := range dis {
+			fh, err := os.Open(filepath.Join(dn, di.Name()))
+			if err != nil {
+				t.Error(err)
+				continue
+			}
+			img, _, err := image.Decode(fh)
+			fh.Close()
+			if err != nil {
+				if strings.Contains(err.Error(), "invalid format") {
+					os.Remove(fh.Name())
+					continue
+				}
+				t.Error(err)
+				continue
+			}
+			if IsBlank(img) {
+				p++
+			} else {
+				n++
+			}
+		}
+		t.Log("positive:", p, "negative:", n)
+		if rate := n * 100 / (p + n); rate > 10 {
+			t.Errorf("more than 10%% (%d) false negative", rate)
+		}
+	})
+}
+
+func TestIsBlankZIP(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
@@ -30,7 +102,7 @@ func TestIsEmpty(t *testing.T) {
 		"b779df0774805995b24cda14bd5c5674.pdf": {1: false, 2: true, 3: false},
 	}
 	testRunZip(ctx, t, func(ctx context.Context, t *testing.T, p Processor, f *zip.File) {
-		w := want[strings.TrimPrefix(t.Name(), "TestIsEmpty/")]
+		w := want[strings.TrimPrefix(t.Name(), "TestIsBlank/")]
 		if w == nil {
 			return
 		}
@@ -53,7 +125,7 @@ func TestIsEmpty(t *testing.T) {
 				return err
 			}
 			n++
-			got[n] = IsEmpty(img)
+			got[n] = IsBlank(img)
 			return nil
 		})
 
