@@ -33,7 +33,7 @@ import (
 	"github.com/tgulacsi/go/iohlp"
 )
 
-//go:generate sudo apt install libzbar-dev
+//go:generate sudo apt install libzbar-dev || sudo yum install zbar-devel
 
 func main() {
 	if err := Main(); err != nil {

@@ -24,8 +24,6 @@ import (
 )
 
 func TestIsBlankRate(t *testing.T) {
-	rand.Seed(int64(time.Now().Nanosecond()))
-
 	t.Run("false-positive", func(t *testing.T) {
 		t.Parallel()
 		dn := filepath.Join("testdata", "E", "n")
